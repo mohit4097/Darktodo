@@ -23,24 +23,130 @@ jobs:
 
       - name: Prepare project
         run: |
-          mkdir -p lib
-          if [ -f main.dart ]; then cp main.dart lib/main.dart; fi
-          cp -r lib /tmp/agent_lib
-          cp pubspec.yaml /tmp/agent_pubspec.yaml
+          mkdir -p /tmp/proj/lib
+          cp main.dart /tmp/proj/lib/main.dart
+          cat > /tmp/proj/pubspec.yaml <<'PUBEOF'
+          name: agent_os
+          description: AGENT.OS - dark HUD productivity app with reminders, tasks, habits, study tools and charts.
+          publish_to: "none"
+          version: 1.0.0+1
+
+          environment:
+            sdk: ">=3.3.0 <4.0.0"
+
+          dependencies:
+            flutter:
+              sdk: flutter
+            flutter_local_notifications: 17.2.4
+            timezone: ^0.9.4
+            shared_preferences: ^2.3.2
+            fl_chart: 0.69.2
+            intl: ">=0.19.0 <1.0.0"
+            crypto: ^3.0.3
+
+          flutter:
+            uses-material-design: true
+          PUBEOF
+          cat > /tmp/proj/setup_android.py <<'PYEOF'
+          import pathlib
+          import re
+          import sys
+
+          DESUGAR_VERSION = "2.1.4"
+          app = pathlib.Path("android/app")
+
+
+          def patch_gradle():
+              kts = app / "build.gradle.kts"
+              groovy = app / "build.gradle"
+              if kts.exists():
+                  path, is_kts = kts, True
+              elif groovy.exists():
+                  path, is_kts = groovy, False
+              else:
+                  sys.exit("No app build.gradle(.kts) found")
+
+              s = path.read_text()
+              if "oreLibraryDesugaring" in s:
+                  print("gradle already patched")
+                  return
+
+              flag = "isCoreLibraryDesugaringEnabled = true" if is_kts else "coreLibraryDesugaringEnabled true"
+              s, n = re.subn(r"(compileOptions\s*\{)", r"\1\n        " + flag, s, count=1)
+              if n == 0:
+                  s, n = re.subn(
+                      r"(android\s*\{)",
+                      r"\1\n    compileOptions {\n        " + flag + "\n    }",
+                      s,
+                      count=1,
+                  )
+              if n == 0:
+                  sys.exit("Could not add compileOptions")
+
+              if is_kts:
+                  dep = f'    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:{DESUGAR_VERSION}")'
+              else:
+                  dep = f"    coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:{DESUGAR_VERSION}'"
+
+              if re.search(r"^dependencies\s*\{", s, flags=re.M):
+                  s = re.sub(r"^dependencies\s*\{", "dependencies {\n" + dep, s, count=1, flags=re.M)
+              else:
+                  s += "\ndependencies {\n" + dep + "\n}\n"
+
+              path.write_text(s)
+              print("patched", path)
+
+
+          def patch_manifest():
+              path = app / "src/main/AndroidManifest.xml"
+              s = path.read_text()
+              if "ScheduledNotificationReceiver" in s:
+                  print("manifest already patched")
+                  return
+
+              perms = """    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+              <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
+              <uses-permission android:name="android.permission.VIBRATE"/>
+              <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"/>
+              <uses-permission android:name="android.permission.WAKE_LOCK"/>
+          """
+              receivers = """        <receiver android:exported="false" android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationReceiver" />
+                  <receiver android:exported="false" android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationBootReceiver">
+                      <intent-filter>
+                          <action android:name="android.intent.action.BOOT_COMPLETED"/>
+                          <action android:name="android.intent.action.MY_PACKAGE_REPLACED"/>
+                          <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+                          <action android:name="com.htc.intent.action.QUICKBOOT_POWERON"/>
+                      </intent-filter>
+                  </receiver>
+          """
+              s = s.replace("<application", perms + "    <application", 1)
+              s = s.replace("</application>", receivers + "    </application>", 1)
+              s = re.sub(r'android:label="[^"]*"', 'android:label="Agent OS"', s, count=1)
+              path.write_text(s)
+              print("patched manifest")
+
+
+          patch_gradle()
+          patch_manifest()
+          PYEOF
+          cp /tmp/proj/pubspec.yaml /tmp/pubspec_keep.yaml
+          cd /tmp/proj
           flutter create --platforms=android --org com.agentos --project-name agent_os .
-          rm -rf lib && cp -r /tmp/agent_lib lib
-          cp /tmp/agent_pubspec.yaml pubspec.yaml
+          cp /tmp/pubspec_keep.yaml /tmp/proj/pubspec.yaml
           rm -rf test
 
       - name: Patch Android config
+        working-directory: /tmp/proj
         run: python3 setup_android.py
 
-      - run: flutter pub get
-
       - name: Build release APK
-        run: flutter build apk --release
+        working-directory: /tmp/proj
+        run: |
+          flutter pub get
+          flutter build apk --release
 
       - uses: actions/upload-artifact@v4
         with:
           name: agent-os-apk
-          path: build/app/outputs/flutter-apk/app-release.apk
+          path: /tmp/proj/build/app/outputs/flutter-apk/app-release.apk
