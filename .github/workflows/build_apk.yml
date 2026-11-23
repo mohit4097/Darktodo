@@ -21,19 +21,19 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Generate Android project (keeps our lib/ and pubspec.yaml)
+      - name: Prepare project
         run: |
+          mkdir -p lib
+          if [ -f main.dart ]; then cp main.dart lib/main.dart; fi
           cp -r lib /tmp/agent_lib
           cp pubspec.yaml /tmp/agent_pubspec.yaml
           flutter create --platforms=android --org com.agentos --project-name agent_os .
           rm -rf lib && cp -r /tmp/agent_lib lib
           cp /tmp/agent_pubspec.yaml pubspec.yaml
+          rm -rf test
 
       - name: Patch Android config
-        run: python3 tool/setup_android.py
-
-      - name: Remove default test
-        run: rm -rf test
+        run: python3 setup_android.py
 
       - run: flutter pub get
 
